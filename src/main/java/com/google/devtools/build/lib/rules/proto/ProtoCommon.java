@@ -241,16 +241,26 @@ public class ProtoCommon {
     PathFragment importPrefixAttribute = getPathFragmentAttribute(ruleContext, "import_prefix");
     PathFragment stripImportPrefixAttribute =
         getPathFragmentAttribute(ruleContext, "strip_import_prefix");
-    PathFragment protoSourceRoot = getPathFragmentAttribute(ruleContext, "proto_source_root");
+    PathFragment protoSourceRootAttribute =
+        getPathFragmentAttribute(ruleContext, "proto_source_root");
+    boolean hasGeneratedSources = false;
+
+    for (Artifact protoSource : protoSources) {
+      if (!protoSource.isSourceArtifact()) {
+        hasGeneratedSources = true;
+        break;
+      }
+    }
 
     if (importPrefixAttribute == null
         && stripImportPrefixAttribute == null
-        && protoSourceRoot == null) {
+        && protoSourceRootAttribute == null
+        && !hasGeneratedSources) {
       // Simple case, no magic required.
       return null;
     }
 
-    if (protoSourceRoot != null
+    if (protoSourceRootAttribute != null
         && (importPrefixAttribute != null || stripImportPrefixAttribute != null)) {
       ruleContext.ruleError(
           "the 'proto_source_root' attribute is incompatible with "
@@ -258,8 +268,8 @@ public class ProtoCommon {
       return null;
     }
 
-    PathFragment stripImportPrefix = PathFragment.EMPTY_FRAGMENT;
-    PathFragment importPrefix = PathFragment.EMPTY_FRAGMENT;
+    PathFragment stripImportPrefix;
+    PathFragment importPrefix;
 
     if (stripImportPrefixAttribute != null || importPrefixAttribute != null) {
       if (stripImportPrefixAttribute == null) {
@@ -279,32 +289,41 @@ public class ProtoCommon {
 
       if (importPrefixAttribute != null) {
         importPrefix = importPrefixAttribute;
+      } else {
+        importPrefix = PathFragment.EMPTY_FRAGMENT;
       }
 
       if (importPrefix.isAbsolute()) {
         ruleContext.attributeError("import_prefix", "should be a relative path");
         return null;
       }
-    } else { // proto_source_root must have been set
+    } else if (protoSourceRootAttribute != null) {
       if (!ruleContext.getFragment(ProtoConfiguration.class).enableProtoSourceroot()) {
         ruleContext.attributeError("proto_source_root", "this attribute is not supported anymore");
         return null;
       }
 
-      if (!ruleContext.getLabel().getPackageFragment().equals(protoSourceRoot)) {
+      if (!ruleContext.getLabel().getPackageFragment().equals(protoSourceRootAttribute)) {
         ruleContext.attributeError(
             "proto_source_root",
             "proto_source_root must be the same as the package name ("
                 + ruleContext.getLabel().getPackageName()
                 + ")."
                 + " not '"
-                + protoSourceRoot
+                + protoSourceRootAttribute
                 + "'.");
 
         return null;
       }
 
       stripImportPrefix = ruleContext.getPackageDirectory();
+      importPrefix = PathFragment.EMPTY_FRAGMENT;
+    } else {
+      // Has generated sources, but neither strip_import_prefix nor import_prefix.
+      stripImportPrefix =
+          ruleContext.getLabel().getPackageIdentifier().getRepository().getPathUnderExecRoot();
+
+      importPrefix = PathFragment.EMPTY_FRAGMENT;
     }
 
     ImmutableList.Builder<Artifact> symlinks = ImmutableList.builder();
@@ -327,7 +346,9 @@ public class ProtoCommon {
       symlinks.add(importsPair.second);
 
       if (!ruleContext.getFragment(ProtoConfiguration.class).doNotUseBuggyImportPath()
-          && stripImportPrefixAttribute == null) {
+          && stripImportPrefixAttribute == null
+          && protoSourceRootAttribute == null
+          && !hasGeneratedSources) {
         Pair<PathFragment, Artifact> oldImportsPair =
             computeImports(
                 ruleContext,

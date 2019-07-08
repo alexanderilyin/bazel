@@ -358,6 +358,36 @@ public class BazelProtoLibraryTest extends BuildViewTestCase {
   }
 
   @Test
+  public void testExternalRepoWithGeneratedProto() throws Exception {
+    if (!isThisBazel()) {
+      return;
+    }
+
+    FileSystemUtils.appendIsoLatin1(
+        scratch.resolve("WORKSPACE"), "local_repository(name = 'foo', path = '/foo')");
+    invalidatePackages();
+
+    scratch.file("/foo/WORKSPACE");
+    scratch.file(
+        "/foo/x/BUILD",
+        "proto_library(name='x', srcs=['generated.proto'])",
+        "genrule(name='g', srcs=[], outs=['generated.proto'], cmd='')");
+
+    scratch.file("a/BUILD", "proto_library(name='a', srcs=['a.proto'], deps=['@foo//x:x'])");
+
+    String genfiles = getTargetConfiguration().getGenfilesFragment().toString();
+    ConfiguredTarget a = getConfiguredTarget("//a:a");
+    ProtoInfo aInfo = a.get(ProtoInfo.PROVIDER);
+    assertThat(aInfo.getTransitiveProtoSourceRoots())
+        .containsExactly(".", genfiles + "/external/foo/x/_virtual_imports/x");
+
+    ConfiguredTarget x = getConfiguredTarget("@foo//x:x");
+    ProtoInfo xInfo = x.get(ProtoInfo.PROVIDER);
+    assertThat(xInfo.getTransitiveProtoSourceRoots())
+        .containsExactly(genfiles + "/external/foo/x/_virtual_imports/x");
+  }
+
+  @Test
   public void testExportedProtoSourceRoots() throws Exception {
     scratch.file("ad/BUILD",
         "proto_library(name='ad', proto_source_root='ad', srcs=['ad.proto'])");
